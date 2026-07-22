@@ -4,11 +4,13 @@ import type { CSSProperties } from 'react'
 import { PageHeader } from '../components/Shared'
 import { usePlayback } from '../context/usePlayback'
 import { useProjects } from '../hooks/useProjects'
+import { listStoredAnalysisJobs, updateStoredAnalysisJob, upsertStoredAnalysisJob } from '../lib/analysisJobs'
 import { assetName, formatDuration, formatFileSize, isPlayableAsset } from '../lib/assetUtils'
 import { listStoredSeparatorJobs, updateStoredSeparatorJob, upsertStoredSeparatorJob } from '../lib/separationJobs'
 import { audioAssetsApi } from '../services/audioAssetsApi'
+import { audioAnalyzerApi } from '../services/audioAnalyzerApi'
 import { audioSeparatorApi } from '../services/audioSeparatorApi'
-import type { Asset, RecommendedSeparatorModel, SeparatorJob } from '../types/audioAssets'
+import type { AnalysisDocument, AnalysisSummary, AnalyzerJob, Asset, ChordSegment, RecommendedSeparatorModel, SeparatorJob } from '../types/audioAssets'
 
 const wave = [32, 55, 44, 80, 36, 68, 92, 47, 70, 38, 62, 87, 54, 30, 75, 48, 83, 57, 38, 67, 91, 52, 76, 40, 63, 85, 45, 70, 34, 56, 78, 43, 66, 89, 50, 73, 39, 60, 82, 47, 69, 35, 58, 76, 42, 64, 86, 52]
 const fallbackModel = 'UVR-MDX-NET-Inst_HQ_3.onnx'
@@ -35,6 +37,10 @@ export function StudioPage() {
   const [uploading, setUploading] = useState(false)
   const [job, setJob] = useState<SeparatorJob | null>(null)
   const [separating, setSeparating] = useState(false)
+  const [analysisJob, setAnalysisJob] = useState<AnalyzerJob | null>(null)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analysisDocument, setAnalysisDocument] = useState<AnalysisDocument | null>(null)
+  const [timelineExpanded, setTimelineExpanded] = useState(false)
   const [mutedAssetIds, setMutedAssetIds] = useState<Record<string, boolean>>({})
   const [mixerPlaying, setMixerPlaying] = useState(false)
   const [mixerLoading, setMixerLoading] = useState(false)
@@ -42,6 +48,9 @@ export function StudioPage() {
   const [mixerCurrentTime, setMixerCurrentTime] = useState(0)
   const mixerAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map())
   const activePollRef = useRef('')
+  const activeAnalysisPollRef = useRef('')
+  const timelineScrollRef = useRef<HTMLDivElement>(null)
+  const timelineCurrentTimeRef = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const { projects, loading, error, reload } = useProjects()
   const { currentAsset, currentTime, duration, loadingAssetId, playing, playAsset, toggle: toggleGlobalPlayback } = usePlayback()
@@ -65,6 +74,7 @@ export function StudioPage() {
   const selectedProject = projects.find((project) => project.project_id === selectedProjectId)
   const rawAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'raw'), [selectedProject])
   const separatedAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'separated'), [selectedProject])
+  const analysisAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'analysis'), [selectedProject])
 
   useEffect(() => {
     if (selectedAssetId && rawAssets.some((asset) => asset.asset_id === selectedAssetId)) return
@@ -74,6 +84,13 @@ export function StudioPage() {
   const selectedAsset = rawAssets.find((asset) => asset.asset_id === selectedAssetId)
   const selectedModelInfo = models.find((model) => model.filename === selectedModel)
   const modelOutputs = selectedModelInfo?.outputs.length ? selectedModelInfo.outputs : ['vocals', 'instrumental']
+  const selectedAnalysisAsset = useMemo(() => {
+    if (analysisJob && analysisJob.input_asset_id === selectedAsset?.asset_id && analysisJob.output_assets?.length) return analysisJob.output_assets[0]
+    if (!selectedAsset) return null
+    return analysisAssets
+      .filter((asset) => asset.parent_asset_id === selectedAsset.asset_id)
+      .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0] || null
+  }, [analysisAssets, analysisJob, selectedAsset])
   const resultAssets = useMemo(() => {
     if (job?.output_assets.length) return job.output_assets
     return selectedAsset ? separatedAssets.filter((asset) => asset.parent_asset_id === selectedAsset.asset_id) : separatedAssets.slice(0, 6)
@@ -82,10 +99,35 @@ export function StudioPage() {
   const currentJobFailed = job?.status === 'failed'
   const progress = job?.progress_percent ?? (separating ? 3 : 0)
   const taskProgress = currentJobDone ? 100 : currentJobFailed ? 100 : progress
+  const analysisProgress = analysisJob?.progress_percent ?? (analyzing ? 5 : selectedAnalysisAsset ? 100 : 0)
+  const analysisDone = analysisJob?.status === 'finished' || !!selectedAnalysisAsset
+  const analysisFailed = analysisJob?.status === 'failed'
   const resultAssetIds = resultAssets.map((asset) => asset.asset_id).join(',')
-  const timelineAsset = currentAsset || selectedAsset
-  const timelineDuration = duration || timelineAsset?.duration || null
-  const timelineProgress = timelineDuration && currentAsset?.asset_id === timelineAsset?.asset_id ? Math.min(100, Math.round((currentTime / timelineDuration) * 100)) : progress
+  const analysisSummary = analysisDocument?.summary || (analysisJob && analysisJob.input_asset_id === selectedAsset?.asset_id ? analysisJob.result?.summary : null) || null
+  const chordSegments = analysisDocument?.chords?.timeline?.segments || []
+  const timelineAsset = selectedAsset || currentAsset
+  const timelineDuration = currentAsset?.asset_id === timelineAsset?.asset_id ? duration || timelineAsset?.duration || null : timelineAsset?.duration || null
+  const timelineCurrentTime = currentAsset?.asset_id === timelineAsset?.asset_id ? currentTime : 0
+  timelineCurrentTimeRef.current = timelineCurrentTime
+  const currentChord = findCurrentChord(chordSegments, timelineCurrentTime)
+  const chordTimelineDuration = analysisSummary?.duration_seconds || timelineDuration || 0
+  const isAnalysisTimeline = activeTool === 'analyze' && !!analysisDocument
+  const timelineWindow = isAnalysisTimeline
+    ? buildTimelineWindow(chordTimelineDuration || 0, timelineCurrentTime, timelineExpanded)
+    : { start: 0, end: timelineDuration || 1 }
+  const timelineWindowDuration = Math.max(.001, timelineWindow.end - timelineWindow.start)
+  const timelineProgress = Math.max(0, Math.min(100, ((timelineCurrentTime - timelineWindow.start) / timelineWindowDuration) * 100))
+  const timelineMarks = buildTimelineMarks(timelineWindow.start, timelineWindow.end)
+  const visibleChordSegments = chordSegments.filter((segment) => (segment.end_seconds ?? chordTimelineDuration) > timelineWindow.start && segment.start_seconds < timelineWindow.end)
+  const visibleWaveform = isAnalysisTimeline ? sliceWaveform(analysisDocument?.waveform?.peaks || [], timelineWindow, chordTimelineDuration) : wave.map((height) => height / 100)
+  const timelineCanvasWidth = isAnalysisTimeline && timelineExpanded ? Math.max(1200, chordTimelineDuration * 20) : undefined
+
+  useEffect(() => {
+    if (!timelineExpanded || !timelineScrollRef.current || !chordTimelineDuration) return
+    const viewport = timelineScrollRef.current
+    const target = (timelineCurrentTimeRef.current / chordTimelineDuration) * viewport.scrollWidth - viewport.clientWidth * .35
+    viewport.scrollLeft = Math.max(0, target)
+  }, [chordTimelineDuration, timelineExpanded])
 
   const pollJob = useCallback(async (jobId: string) => {
     activePollRef.current = jobId
@@ -104,6 +146,27 @@ export function StudioPage() {
       if (next.status === 'failed') {
         setSeparating(false)
         throw new Error(next.message || '分离任务失败')
+      }
+    }
+  }, [reload])
+
+  const pollAnalysisJob = useCallback(async (jobId: string) => {
+    activeAnalysisPollRef.current = jobId
+    for (;;) {
+      await wait(1800)
+      if (activeAnalysisPollRef.current !== jobId) return
+      const next = await audioAnalyzerApi.getJob(jobId)
+      setAnalysisJob(next)
+      updateStoredAnalysisJob(jobId, next)
+      if (next.status === 'finished') {
+        setAnalyzing(false)
+        setNotice({ tone: 'info', text: '音乐分析完成，analysis.json 已登记到资产库。' })
+        await reload()
+        return
+      }
+      if (next.status === 'failed') {
+        setAnalyzing(false)
+        throw new Error(next.error || '音乐分析任务失败')
       }
     }
   }, [reload])
@@ -134,6 +197,49 @@ export function StudioPage() {
       setNotice({ tone: 'error', text: requestError instanceof Error ? requestError.message : '分离任务失败' })
     })
   }, [pollJob, selectedProjectId])
+
+  useEffect(() => {
+    if (!selectedProjectId) return
+    const activeJob = listStoredAnalysisJobs().find((record) => record.project_id === selectedProjectId && !['finished', 'failed'].includes(record.status))
+    if (!activeJob || activeAnalysisPollRef.current === activeJob.job_id) return
+    setActiveTool('analyze')
+    setSelectedAssetId(activeJob.input_asset_id)
+    setAnalyzing(true)
+    setAnalysisJob({
+      job_id: activeJob.job_id,
+      task_id: activeJob.task_id,
+      input_asset_id: activeJob.input_asset_id,
+      status: activeJob.status,
+      stage: activeJob.stage,
+      progress_percent: activeJob.progress_percent,
+      result: null,
+      output_assets: [],
+      error: null,
+    })
+    void pollAnalysisJob(activeJob.job_id).catch((requestError: unknown) => {
+      setAnalyzing(false)
+      setNotice({ tone: 'error', text: requestError instanceof Error ? requestError.message : '音乐分析任务失败' })
+    })
+  }, [pollAnalysisJob, selectedProjectId])
+
+  useEffect(() => {
+    if (!selectedAnalysisAsset) {
+      setAnalysisDocument(null)
+      return
+    }
+    setAnalysisDocument(null)
+    let cancelled = false
+    void audioAssetsApi.getAssetPlayUrl(selectedAnalysisAsset.asset_id)
+      .then((response) => fetch(response.url))
+      .then((response) => response.json())
+      .then((document: AnalysisDocument) => {
+        if (!cancelled) setAnalysisDocument(document)
+      })
+      .catch(() => {
+        if (!cancelled) setAnalysisDocument(null)
+      })
+    return () => { cancelled = true }
+  }, [selectedAnalysisAsset])
 
   useEffect(() => {
     const audios = mixerAudioRef.current
@@ -227,6 +333,39 @@ export function StudioPage() {
     } catch (requestError) {
       setSeparating(false)
       setNotice({ tone: 'error', text: requestError instanceof Error ? requestError.message : '分离失败' })
+    }
+  }
+
+  async function runAnalysis() {
+    if (!selectedAsset) {
+      setNotice({ tone: 'error', text: '请先选择一个原始音频资产。' })
+      return
+    }
+    setAnalyzing(true)
+    setAnalysisJob(null)
+    setAnalysisDocument(null)
+    setNotice({ tone: 'info', text: `正在提交音乐分析任务：${assetName(selectedAsset)}` })
+    try {
+      const created = await audioAnalyzerApi.createAnalysis({ assetId: selectedAsset.asset_id })
+      setAnalysisJob(created)
+      if (!created.job_id || !created.task_id) throw new Error('分析服务没有返回 job_id/task_id')
+      upsertStoredAnalysisJob({
+        job_id: created.job_id,
+        task_id: created.task_id,
+        project_id: selectedAsset.project_id,
+        input_asset_id: selectedAsset.asset_id,
+        asset_name: assetName(selectedAsset),
+        status: created.status,
+        stage: created.stage || 'queued',
+        progress_percent: created.progress_percent ?? 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      setNotice({ tone: 'info', text: '音乐分析任务已进入队列。' })
+      await pollAnalysisJob(created.job_id)
+    } catch (requestError) {
+      setAnalyzing(false)
+      setNotice({ tone: 'error', text: requestError instanceof Error ? requestError.message : '音乐分析失败' })
     }
   }
 
@@ -329,7 +468,7 @@ export function StudioPage() {
       <section className="timeline-card">
         <div className="studio-project-row">
           <label>项目<select value={selectedProjectId} onChange={(event) => { setSelectedProjectId(event.target.value); setSelectedAssetId('') }} disabled={loading}>{projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}{project.is_default ? ' · 默认' : ''}</option>)}</select></label>
-          <label>输入资产<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)} disabled={!rawAssets.length || separating}>{rawAssets.map((asset) => <option key={asset.asset_id} value={asset.asset_id}>{assetName(asset)}</option>)}</select></label>
+          <label>输入资产<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)} disabled={!rawAssets.length || separating || analyzing}>{rawAssets.map((asset) => <option key={asset.asset_id} value={asset.asset_id}>{assetName(asset)}</option>)}</select></label>
         </div>
         <div className="timeline-head">
           <div className="timeline-track-cover cover-a"><Music2 size={23} /></div>
@@ -337,22 +476,38 @@ export function StudioPage() {
           <button onClick={() => inputRef.current?.click()}><RotateCcw size={15} /> 替换</button>
           <button disabled={!currentJobDone}><Download size={16} /></button>
         </div>
-        <div className="timeline-ruler"><span>{formatDuration(currentAsset?.asset_id === timelineAsset?.asset_id ? currentTime : null)}</span><span>00:45</span><span>01:30</span><span>02:15</span><span>03:00</span><span>{formatDuration(timelineDuration)}</span></div>
-        <div className="large-wave" onClick={() => void play(timelineAsset || undefined)}>
-          <div className="wave-playhead" style={{ left: `${Math.max(2, timelineProgress)}%` }}><i /><span>{separating ? `${progress}%` : formatDuration(currentAsset?.asset_id === timelineAsset?.asset_id ? currentTime : null)}</span></div>
-          {wave.map((height, index) => <i key={index} className={index < Math.round(timelineProgress / 2.2) ? 'played' : ''} style={{ height: `${height}%` }} />)}
+        <div className={`timeline-viewport ${timelineExpanded && isAnalysisTimeline ? 'is-expanded' : ''}`} ref={timelineScrollRef}>
+          <div className="timeline-canvas" style={timelineCanvasWidth ? { width: `${timelineCanvasWidth}px` } : undefined}>
+            <div className="timeline-ruler">{timelineMarks.map((mark, index) => <span key={`${mark}-${index}`}>{formatDuration(mark)}</span>)}</div>
+            <div className={`large-wave ${activeTool === 'analyze' && chordSegments.length ? 'has-chords' : ''}`} onClick={() => void play(timelineAsset || undefined)}>
+              {activeTool === 'analyze' && visibleChordSegments.length > 0 && chordTimelineDuration > 0 && (
+                <div className="analysis-chord-timeline" aria-label="和弦时间轴">
+                  {visibleChordSegments.map((segment, index) => {
+                    const start = Math.max(timelineWindow.start, segment.start_seconds)
+                    const end = Math.min(timelineWindow.end, Math.max(start, segment.end_seconds ?? chordTimelineDuration))
+                    const left = Math.min(100, ((start - timelineWindow.start) / timelineWindowDuration) * 100)
+                    const width = Math.max(.2, Math.min(100 - left, ((end - start) / timelineWindowDuration) * 100))
+                    return <span key={`${segment.start_seconds}-${segment.chord}-${index}`} className={segment === currentChord ? 'active' : ''} style={{ left: `${left}%`, width: `${width}%` }} title={`${formatDuration(segment.start_seconds)}–${formatDuration(segment.end_seconds)} · ${segment.chord}`}><b>{segment.chord}</b></span>
+                  })}
+                </div>
+              )}
+              <div className="wave-playhead" style={{ left: `${timelineProgress}%` }}><i /><span>{activeTool === 'analyze' && currentChord ? `${currentChord.chord} · ${formatDuration(timelineCurrentTime || null)}` : formatDuration(timelineCurrentTime || null)}</span></div>
+              {visibleWaveform.map((peak, index) => <i key={index} className={(index / Math.max(1, visibleWaveform.length - 1)) * 100 < timelineProgress ? 'played' : ''} style={{ height: `${Math.max(4, peak * 100)}%` }} />)}
+              {isAnalysisTimeline && !visibleWaveform.length && <div className="waveform-empty">当前分析资产没有波形数据，请重新分析后查看真实波形</div>}
+            </div>
+          </div>
         </div>
         <div className="timeline-controls">
           <button className="timeline-play" disabled={!timelineAsset || loadingAssetId === timelineAsset.asset_id} onClick={() => void play(timelineAsset || undefined)}>{currentAsset?.asset_id === timelineAsset?.asset_id && playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button>
-          <span>{job ? `${statusText(job.status)} · ${job.message || 'processing'}` : `${formatDuration(timelineDuration)} · ${rawAssets.length} 个原始资产`}</span>
+          <span>{activeTool === 'analyze' && currentChord ? `当前和弦 ${currentChord.chord} · ${formatDuration(currentChord.start_seconds)}–${formatDuration(currentChord.end_seconds)}` : activeTool === 'analyze' && analysisJob ? `${statusText(analysisJob.status)} · ${analysisJob.stage || 'processing'}` : job ? `${statusText(job.status)} · ${job.message || 'processing'}` : `${formatDuration(timelineDuration)} · ${rawAssets.length} 个原始资产`}</span>
           <div className="timeline-spacer" />
-          <button><Waves size={16} /> 波形</button><button><Plus size={16} /> 添加标记</button>
+          {isAnalysisTimeline && <button className={timelineExpanded ? 'active' : ''} onClick={() => setTimelineExpanded((value) => !value)}><Waves size={16} /> {timelineExpanded ? '跟随播放' : '展开全部'}</button>}<button><Plus size={16} /> 添加标记</button>
         </div>
       </section>
 
       <div className="studio-columns">
         <section className="studio-panel stems-panel">
-          <div className="panel-title"><div><h2>{activeTool === 'separate' ? '分离音轨' : activeTool === 'analyze' ? '音乐理解' : '处理与增强'}</h2><p>{activeTool === 'separate' ? '选择模型，输出轨道由模型定义' : '从音乐中提取结构化信息'}</p></div><button><ChevronDown size={16} /></button></div>
+          <div className="panel-title"><div><h2>{activeTool === 'separate' ? '分离音轨' : activeTool === 'analyze' ? '音乐分析' : '处理与增强'}</h2><p>{activeTool === 'separate' ? '选择模型，输出轨道由模型定义' : activeTool === 'analyze' ? '固定分析流程，生成完整结构化结果' : '处理和增强音频内容'}</p></div><button><ChevronDown size={16} /></button></div>
           {activeTool === 'separate' ? (
             <>
               <div className="separation-controls">
@@ -384,8 +539,28 @@ export function StudioPage() {
             </>
           ) : activeTool === 'analyze' ? (
             <div className="analysis-options">
-              {['BPM 与节拍', '调性与音阶', '和弦时间轴', '旋律与音高'].map((item, index) => <label key={item}><input type="checkbox" defaultChecked={index < 3} /><span><CircleCheck size={17} />{item}</span></label>)}
-              <button className="run-tool-button"><Activity size={17} /> 开始分析</button>
+              <div className="model-output-card">
+                <div className="model-output-head">
+                  <span>固定分析输出</span>
+                  <strong>analysis.json</strong>
+                </div>
+                <div className="output-track-grid">
+                  {['summary', 'rhythm', 'tonal', 'audio_features', 'chords'].map((item, index) => <div className="output-track-pill" key={item} style={{ '--stem-color': stemColors[(index + 1) % stemColors.length] } as CSSProperties}><i /><span><strong>{analysisLabel(item)}</strong><small>{item}</small></span></div>)}
+                </div>
+                <small>节拍由 beat_this 生成；调性、响度、音色与和弦由固定后端流程生成，无需手动选择。完成后统一登记为一个 analysis asset。</small>
+              </div>
+              <div className={`separation-run-strip ${analyzing ? 'is-running' : ''}`}>
+                <button className="run-tool-button" disabled={!selectedAsset || analyzing} onClick={() => void runAnalysis()}>
+                  {analyzing && <i className="run-progress-fill" style={{ width: `${Math.max(0, Math.min(100, analysisProgress))}%` }} />}
+                  <span><Activity size={17} /> {analyzing ? `${statusText(analysisJob?.status || 'started')} ${Math.round(analysisProgress)}%` : '开始分析'}</span>
+                </button>
+                {(analysisJob || selectedAnalysisAsset) && (
+                  <div className="separation-task-status">
+                    <span>{analysisJob?.stage || (selectedAnalysisAsset ? '已同步 analysis asset' : '等待分析')}</span>
+                    <strong>{Math.round(analysisProgress)}%</strong>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="analysis-options">
@@ -396,31 +571,67 @@ export function StudioPage() {
         </section>
 
         <section className="studio-panel insight-panel">
-          <div className="panel-title"><div><h2>分离结果</h2><p>真实生成的轨道资产</p></div><span className={`analysis-ready ${currentJobFailed ? 'failed' : ''}`}><i /> {currentJobDone ? '已完成' : separating ? '运行中' : resultAssets.length ? '有结果' : '暂无结果'}</span></div>
-          <div className="metric-grid">
-            <div><span><Gauge size={17} /> 当前输入</span><strong>{selectedAsset ? assetName(selectedAsset) : '—'}</strong><small>{selectedAsset ? `${selectedAsset.format.toUpperCase()} · ${formatDuration(selectedAsset.duration)} · ${formatFileSize(selectedAsset.file_size)}` : '请选择输入资产'}</small></div>
-            <div><span><Music2 size={17} /> 输出轨道</span><strong>{resultAssets.length}</strong><small>{resultAssets.length ? '已生成 separated assets' : '等待分离结果'}</small></div>
-          </div>
-          <div className="chord-block">
-            <div><span>多轨预览 · {formatDuration(mixerCurrentTime)}</span><div className="mixer-preview-actions"><button className="mixer-master-play" type="button" disabled={!resultAssets.length || mixerLoading} onClick={() => void toggleMixer()}>{mixerPlaying && !soloAssetId ? <Pause size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" />}{mixerLoading ? '加载中' : mixerPlaying && !soloAssetId ? '暂停混音' : '播放混音'}</button><button onClick={() => void reload()}>刷新资产</button></div></div>
-            <div className="stem-list preview-stem-list">
-              {resultAssets.map((asset, index) => {
-                const color = stemColors[index % stemColors.length]
-                const muted = !!mutedAssetIds[asset.asset_id]
-                return (
-                  <div className={`stem-row is-active ${muted ? 'is-muted' : ''}`} key={asset.asset_id}>
-                    <button className={`stem-solo ${soloAssetId === asset.asset_id && mixerPlaying ? 'active' : ''}`} type="button" onClick={() => void toggleSolo(asset)} disabled={!isPlayableAsset(asset) || mixerLoading} aria-label={`Solo ${stemLabel(asset.subtype)}`}>{soloAssetId === asset.asset_id && mixerPlaying ? <Pause size={10} fill="currentColor" /> : 'S'}</button>
-                    <i className="stem-color" style={{ background: color }} />
-                    <div><strong>{stemLabel(asset.subtype)}</strong><small>{assetName(asset)}</small></div>
-                    <div className="stem-mini-wave">{wave.slice(index * 5, index * 5 + 18).map((height, waveIndex) => <i key={waveIndex} style={{ height: `${Math.max(18, height - 18)}%`, background: color }} />)}</div>
-                    <button className={`stem-toggle ${muted ? '' : 'on'}`} type="button" onClick={() => togglePreviewMute(asset.asset_id)} title={muted ? '加入混音' : '从混音中静音'} aria-pressed={!muted}><i /></button>
-                  </div>
-                )
-              })}
-              {!resultAssets.length && <div className="result-empty"><Music2 size={18} /><strong>暂无真实分离结果</strong><span>{selectedAsset ? '点击左侧“开始分离”后，生成的资产会出现在这里。' : '请先选择或上传一个输入音频。'}</span></div>}
-            </div>
-          </div>
-          <button className="insight-action" disabled={!resultAssets.length}><Sparkles size={16} /> 用真实分离结果继续分析或创作</button>
+          {activeTool === 'analyze' ? (
+            <>
+              <div className="panel-title"><div><h2>分析结果</h2><p>真实生成的 analysis.json 资产</p></div><span className={`analysis-ready ${analysisFailed ? 'failed' : ''}`}><i /> {analysisDone ? '已完成' : analyzing ? '运行中' : '暂无结果'}</span></div>
+              <div className="metric-grid">
+                <div><span><Gauge size={17} /> 当前输入</span><strong>{selectedAsset ? assetName(selectedAsset) : '—'}</strong><small>{selectedAsset ? `${selectedAsset.format.toUpperCase()} · ${formatDuration(selectedAsset.duration)} · ${formatFileSize(selectedAsset.file_size)}` : '请选择输入资产'}</small></div>
+                <div><span><Activity size={17} /> 分析资产</span><strong>{selectedAnalysisAsset ? '1' : '0'}</strong><small>{selectedAnalysisAsset ? assetName(selectedAnalysisAsset) : '等待 analysis.json'}</small></div>
+              </div>
+              <div className="chord-block">
+                <div><span>结构化分析结果</span><div className="mixer-preview-actions"><button onClick={() => void reload()}>刷新资产</button></div></div>
+                {analysisSummary ? (
+                  <>
+                    <div className="analysis-summary-grid">
+                      <div><span>BPM</span><strong>{formatMetric(analysisSummary.bpm)}</strong></div>
+                      <div><span>Key</span><strong>{formatKey(analysisSummary)}</strong></div>
+                      <div><span>Beats</span><strong>{analysisSummary.beats_count ?? '—'}</strong></div>
+                      <div><span>Loudness</span><strong>{formatMetric(analysisSummary.loudness)}<small> LUFS</small></strong></div>
+                      <div><span>Danceability</span><strong>{formatMetric(analysisSummary.danceability)}</strong></div>
+                      <div><span>Chord Key</span><strong>{analysisSummary.chords_key ? `${analysisSummary.chords_key} ${analysisSummary.chords_scale || ''}` : '—'}</strong></div>
+                    </div>
+                    <div className="analysis-detail-grid">
+                      <div><span>节奏</span><strong>{analysisDocument?.rhythm?.backend || 'beat_this'} · {analysisDocument?.rhythm?.downbeats_count ?? 0} 个强拍</strong><small>{analysisDocument?.rhythm?.bars?.length ?? 0} 个小节边界</small></div>
+                      <div><span>调性</span><strong>强度 {formatMetric(analysisSummary.key_strength)}</strong><small>调音 {formatMetric(analysisSummary.tuning_frequency)} Hz</small></div>
+                      <div><span>音频特征</span><strong>动态 {formatMetric(analysisSummary.dynamic_complexity)}</strong><small>响度范围 {formatMetric(analysisDocument?.audio_features?.loudness_range)}</small></div>
+                      <div><span>和弦时间轴</span><strong>{currentChord?.chord || chordSegments[0]?.chord || '—'}</strong><small>{chordSegments.length} 个连续和弦段 · 随播放实时更新</small></div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="result-empty"><Activity size={18} /><strong>暂无真实分析结果</strong><span>{selectedAsset ? '点击左侧“开始分析”后，生成的 analysis.json 会出现在这里。' : '请先选择或上传一个输入音频。'}</span></div>
+                )}
+              </div>
+              <button className="insight-action" disabled={!selectedAnalysisAsset}><Sparkles size={16} /> 用分析结果继续编曲或生成</button>
+            </>
+          ) : (
+            <>
+              <div className="panel-title"><div><h2>分离结果</h2><p>真实生成的轨道资产</p></div><span className={`analysis-ready ${currentJobFailed ? 'failed' : ''}`}><i /> {currentJobDone ? '已完成' : separating ? '运行中' : resultAssets.length ? '有结果' : '暂无结果'}</span></div>
+              <div className="metric-grid">
+                <div><span><Gauge size={17} /> 当前输入</span><strong>{selectedAsset ? assetName(selectedAsset) : '—'}</strong><small>{selectedAsset ? `${selectedAsset.format.toUpperCase()} · ${formatDuration(selectedAsset.duration)} · ${formatFileSize(selectedAsset.file_size)}` : '请选择输入资产'}</small></div>
+                <div><span><Music2 size={17} /> 输出轨道</span><strong>{resultAssets.length}</strong><small>{resultAssets.length ? '已生成 separated assets' : '等待分离结果'}</small></div>
+              </div>
+              <div className="chord-block">
+                <div><span>多轨预览 · {formatDuration(mixerCurrentTime)}</span><div className="mixer-preview-actions"><button className="mixer-master-play" type="button" disabled={!resultAssets.length || mixerLoading} onClick={() => void toggleMixer()}>{mixerPlaying && !soloAssetId ? <Pause size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" />}{mixerLoading ? '加载中' : mixerPlaying && !soloAssetId ? '暂停混音' : '播放混音'}</button><button onClick={() => void reload()}>刷新资产</button></div></div>
+                <div className="stem-list preview-stem-list">
+                  {resultAssets.map((asset, index) => {
+                    const color = stemColors[index % stemColors.length]
+                    const muted = !!mutedAssetIds[asset.asset_id]
+                    return (
+                      <div className={`stem-row is-active ${muted ? 'is-muted' : ''}`} key={asset.asset_id}>
+                        <button className={`stem-solo ${soloAssetId === asset.asset_id && mixerPlaying ? 'active' : ''}`} type="button" onClick={() => void toggleSolo(asset)} disabled={!isPlayableAsset(asset) || mixerLoading} aria-label={`Solo ${stemLabel(asset.subtype)}`}>{soloAssetId === asset.asset_id && mixerPlaying ? <Pause size={10} fill="currentColor" /> : 'S'}</button>
+                        <i className="stem-color" style={{ background: color }} />
+                        <div><strong>{stemLabel(asset.subtype)}</strong><small>{assetName(asset)}</small></div>
+                        <div className="stem-mini-wave">{wave.slice(index * 5, index * 5 + 18).map((height, waveIndex) => <i key={waveIndex} style={{ height: `${Math.max(18, height - 18)}%`, background: color }} />)}</div>
+                        <button className={`stem-toggle ${muted ? '' : 'on'}`} type="button" onClick={() => togglePreviewMute(asset.asset_id)} title={muted ? '加入混音' : '从混音中静音'} aria-pressed={!muted}><i /></button>
+                      </div>
+                    )
+                  })}
+                  {!resultAssets.length && <div className="result-empty"><Music2 size={18} /><strong>暂无真实分离结果</strong><span>{selectedAsset ? '点击左侧“开始分离”后，生成的资产会出现在这里。' : '请先选择或上传一个输入音频。'}</span></div>}
+                </div>
+              </div>
+              <button className="insight-action" disabled={!resultAssets.length}><Sparkles size={16} /> 用真实分离结果继续分析或创作</button>
+            </>
+          )}
         </section>
       </div>
     </div>
@@ -429,6 +640,45 @@ export function StudioPage() {
 
 function stemLabel(stem: string) {
   return stemLabels[stem.toLowerCase()] || stem
+}
+
+function analysisLabel(key: string) {
+  const labels: Record<string, string> = { summary: '摘要', rhythm: '节拍', tonal: '调性', audio_features: '音频特征', chords: '和弦' }
+  return labels[key] || key
+}
+
+function findCurrentChord(segments: ChordSegment[], seconds: number) {
+  if (!segments.length) return null
+  return segments.find((segment) => seconds >= segment.start_seconds && seconds < (segment.end_seconds ?? Number.POSITIVE_INFINITY)) || (seconds <= segments[0].start_seconds ? segments[0] : segments[segments.length - 1])
+}
+
+function buildTimelineWindow(duration: number, currentTime: number, expanded: boolean) {
+  if (!duration || !Number.isFinite(duration)) return { start: 0, end: 1 }
+  if (expanded) return { start: 0, end: duration }
+  const windowDuration = Math.min(24, duration)
+  const start = Math.max(0, Math.min(duration - windowDuration, currentTime - 8))
+  return { start, end: start + windowDuration }
+}
+
+function buildTimelineMarks(start: number, end: number) {
+  const duration = Math.max(0, end - start)
+  return Array.from({ length: 6 }, (_, index) => start + (duration * index) / 5)
+}
+
+function sliceWaveform(peaks: number[], window: { start: number; end: number }, duration: number) {
+  if (!peaks.length || !duration) return []
+  const startIndex = Math.max(0, Math.floor((window.start / duration) * peaks.length))
+  const endIndex = Math.min(peaks.length, Math.max(startIndex + 1, Math.ceil((window.end / duration) * peaks.length)))
+  return peaks.slice(startIndex, endIndex).map((peak) => Math.max(0, Math.min(1, peak)))
+}
+
+function formatMetric(value: number | null | undefined) {
+  return typeof value === 'number' && Number.isFinite(value) ? String(Math.round(value * 10) / 10) : '—'
+}
+
+function formatKey(summary: AnalysisSummary) {
+  if (!summary.key) return '—'
+  return `${summary.key} ${summary.scale || ''}`.trim()
 }
 
 function statusText(status: string) {

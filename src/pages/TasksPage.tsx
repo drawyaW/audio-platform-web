@@ -2,8 +2,10 @@ import { CheckCircle2, Clock3, FileAudio, Filter, RefreshCw, Search } from 'luci
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageHeader, StatusBadge } from '../components/Shared'
 import { useProjects } from '../hooks/useProjects'
+import { analysisTaskProgressFromStoredJob, updateStoredAnalysisJob } from '../lib/analysisJobs'
 import { taskProgressFromStoredJob } from '../lib/separationJobs'
 import { audioAssetsApi } from '../services/audioAssetsApi'
+import { audioAnalyzerApi } from '../services/audioAnalyzerApi'
 import { audioSeparatorApi } from '../services/audioSeparatorApi'
 import type { Task } from '../types/audioAssets'
 
@@ -33,6 +35,17 @@ export function TasksPage() {
       await Promise.all(records.filter((task) => task.type === 'separate' && task.status === 'running').map(async (task) => {
         try {
           const job = await audioSeparatorApi.getJob(task.task_id)
+          if (job.status === 'finished' || job.status === 'failed') {
+            records = records.map((item) => item.task_id === task.task_id ? { ...item, status: job.status === 'finished' ? 'success' : 'failed' } : item)
+          }
+        } catch {
+          // The SQL task remains the source of truth if the queue job has expired.
+        }
+      }))
+      await Promise.all(records.filter((task) => task.type === 'analyze' && task.status === 'running').map(async (task) => {
+        try {
+          const job = await audioAnalyzerApi.getJob(task.task_id)
+          updateStoredAnalysisJob(task.task_id, job)
           if (job.status === 'finished' || job.status === 'failed') {
             records = records.map((item) => item.task_id === task.task_id ? { ...item, status: job.status === 'finished' ? 'success' : 'failed' } : item)
           }
@@ -76,7 +89,8 @@ export function TasksPage() {
       <div className="task-list full-task-list">
         {filtered.map((task) => {
           const stored = taskProgressFromStoredJob(task.task_id)
-          const progress = task.status === 'success' ? 100 : task.status === 'failed' ? 100 : stored?.progress_percent ?? (task.status === 'running' ? 10 : 0)
+          const analysisStored = analysisTaskProgressFromStoredJob(task.task_id)
+          const progress = task.status === 'success' ? 100 : task.status === 'failed' ? 100 : stored?.progress_percent ?? analysisStored?.progress_percent ?? (task.status === 'running' ? 10 : 0)
           return (
             <div className="task-row" key={task.task_id}>
               <div className="task-file-icon"><FileAudio size={19} /></div>

@@ -1,5 +1,7 @@
 # SONORA Web
 
+English documentation: [README_EN.md](README_EN.md).
+
 音频智能创作平台的统一前端。当前版本覆盖：
 
 - 首页与创作入口
@@ -37,4 +39,12 @@
 
 复制 `.env.example` 为 `.env.local` 后可调整各服务地址。
 
-用户、项目和资产页面已经接入 `audio-assets`。音轨分离、音乐分析、AI 生成、Agent 和任务中心仍是界面预览，后续再接入对应服务。
+当前真实接入情况：
+
+- `audio-assets`（`8030`）：JWT 登录、项目、上传、资产、任务、播放地址和删除。
+- `audio-separator`（`8001`）：模型选择、分离任务、实时进度和分轨资产。
+- `audio-analyzer`（`8020`）：分析任务、实时进度、统一 `analysis.json`、波形峰值和和弦时间轴。
+
+前端向三个后端复用 `audio-assets` 签发的 Bearer Token。分离和分析任务标识会保存在浏览器本地，切换页面或刷新后可恢复轮询。
+
+AI 生成、Agent 页面和首页部分内容仍属于界面预览或 mock 数据，尚未接入完整的持久资产链路。
