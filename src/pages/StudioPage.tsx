@@ -1,16 +1,19 @@
 import { Activity, ChevronDown, CircleCheck, Download, Gauge, Music2, Pause, Play, Plus, RotateCcw, Scissors, SlidersHorizontal, Sparkles, Upload, Waves } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { AnalysisMetadata } from '../components/AnalysisMetadata'
+import { LyricsUploadPrompt } from '../components/LyricsUploadPrompt'
 import { PageHeader } from '../components/Shared'
 import { usePlayback } from '../context/usePlayback'
 import { useProjects } from '../hooks/useProjects'
 import { listStoredAnalysisJobs, updateStoredAnalysisJob, upsertStoredAnalysisJob } from '../lib/analysisJobs'
+import { buildTimelineMarks, buildTimelineWindow, findCurrentChord, sliceWaveform } from '../lib/analysisTimeline'
 import { assetName, formatDuration, formatFileSize, isPlayableAsset } from '../lib/assetUtils'
 import { listStoredSeparatorJobs, updateStoredSeparatorJob, upsertStoredSeparatorJob } from '../lib/separationJobs'
 import { audioAssetsApi } from '../services/audioAssetsApi'
 import { audioAnalyzerApi } from '../services/audioAnalyzerApi'
 import { audioSeparatorApi } from '../services/audioSeparatorApi'
-import type { AnalysisDocument, AnalysisSummary, AnalyzerJob, Asset, ChordSegment, RecommendedSeparatorModel, SeparatorJob } from '../types/audioAssets'
+import type { AnalysisDocument, AnalysisSummary, AnalyzerJob, Asset, RecommendedSeparatorModel, SeparatorJob } from '../types/audioAssets'
 
 const wave = [32, 55, 44, 80, 36, 68, 92, 47, 70, 38, 62, 87, 54, 30, 75, 48, 83, 57, 38, 67, 91, 52, 76, 40, 63, 85, 45, 70, 34, 56, 78, 43, 66, 89, 50, 73, 39, 60, 82, 47, 69, 35, 58, 76, 42, 64, 86, 52]
 const fallbackModel = 'UVR-MDX-NET-Inst_HQ_3.onnx'
@@ -34,6 +37,7 @@ export function StudioPage() {
   const [selectedModel, setSelectedModel] = useState(fallbackModel)
   const [outputFormat, setOutputFormat] = useState('wav')
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
+  const [lyricsPromptAsset, setLyricsPromptAsset] = useState<Asset | null>(null)
   const [uploading, setUploading] = useState(false)
   const [job, setJob] = useState<SeparatorJob | null>(null)
   const [separating, setSeparating] = useState(false)
@@ -72,7 +76,7 @@ export function StudioPage() {
   }, [projects, selectedProjectId])
 
   const selectedProject = projects.find((project) => project.project_id === selectedProjectId)
-  const rawAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'raw'), [selectedProject])
+  const rawAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'raw' && !asset.parent_asset_id && asset.subtype !== 'timed_lyrics' && asset.format.toLowerCase() !== 'lrc'), [selectedProject])
   const separatedAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'separated'), [selectedProject])
   const analysisAssets = useMemo(() => (selectedProject?.assets || []).filter((asset) => asset.type === 'analysis'), [selectedProject])
 
@@ -290,6 +294,7 @@ export function StudioPage() {
       await reload()
       setSelectedAssetId(response.asset.asset_id)
       setNotice({ tone: 'info', text: `${file.name} 已上传，可以直接发起分离。` })
+      setLyricsPromptAsset(response.asset)
     } catch (requestError) {
       setNotice({ tone: 'error', text: requestError instanceof Error ? requestError.message : '上传失败' })
     } finally {
@@ -457,6 +462,7 @@ export function StudioPage() {
       />
       <input ref={inputRef} type="file" accept="audio/*" hidden onChange={(event) => event.target.files?.[0] && void upload(event.target.files[0])} />
       {notice && <div className={`upload-notice ${notice.tone === 'error' ? 'error' : ''}`}><Music2 size={17} /><span>{notice.text}</span><button onClick={() => setNotice(null)}>关闭</button></div>}
+      {lyricsPromptAsset && <LyricsUploadPrompt asset={lyricsPromptAsset} onClose={() => setLyricsPromptAsset(null)} onUploaded={async () => { await reload(); setNotice({ tone: 'info', text: 'LRC 歌词已关联，音乐分析时会自动加入 analysis.json。' }); setLyricsPromptAsset(null) }} />}
       {error && <div className="upload-notice error"><Music2 size={17} /><span>{error}</span><button onClick={() => void reload()}>重新加载</button></div>}
 
       <div className="studio-toolbar">
@@ -545,7 +551,7 @@ export function StudioPage() {
                   <strong>analysis.json</strong>
                 </div>
                 <div className="output-track-grid">
-                  {['summary', 'rhythm', 'tonal', 'audio_features', 'chords'].map((item, index) => <div className="output-track-pill" key={item} style={{ '--stem-color': stemColors[(index + 1) % stemColors.length] } as CSSProperties}><i /><span><strong>{analysisLabel(item)}</strong><small>{item}</small></span></div>)}
+                  {['summary', 'rhythm', 'tonal', 'audio_features', 'chords', 'lyrics'].map((item, index) => <div className="output-track-pill" key={item} style={{ '--stem-color': stemColors[(index + 1) % stemColors.length] } as CSSProperties}><i /><span><strong>{analysisLabel(item)}</strong><small>{item}</small></span></div>)}
                 </div>
                 <small>节拍由 beat_this 生成；调性、响度、音色与和弦由固定后端流程生成，无需手动选择。完成后统一登记为一个 analysis asset。</small>
               </div>
@@ -582,6 +588,7 @@ export function StudioPage() {
                 <div><span>结构化分析结果</span><div className="mixer-preview-actions"><button onClick={() => void reload()}>刷新资产</button></div></div>
                 {analysisSummary ? (
                   <>
+                    <AnalysisMetadata document={analysisDocument} />
                     <div className="analysis-summary-grid">
                       <div><span>BPM</span><strong>{formatMetric(analysisSummary.bpm)}</strong></div>
                       <div><span>Key</span><strong>{formatKey(analysisSummary)}</strong></div>
@@ -643,33 +650,8 @@ function stemLabel(stem: string) {
 }
 
 function analysisLabel(key: string) {
-  const labels: Record<string, string> = { summary: '摘要', rhythm: '节拍', tonal: '调性', audio_features: '音频特征', chords: '和弦' }
+  const labels: Record<string, string> = { summary: '摘要', rhythm: '节拍', tonal: '调性', audio_features: '音频特征', chords: '和弦', lyrics: '歌词' }
   return labels[key] || key
-}
-
-function findCurrentChord(segments: ChordSegment[], seconds: number) {
-  if (!segments.length) return null
-  return segments.find((segment) => seconds >= segment.start_seconds && seconds < (segment.end_seconds ?? Number.POSITIVE_INFINITY)) || (seconds <= segments[0].start_seconds ? segments[0] : segments[segments.length - 1])
-}
-
-function buildTimelineWindow(duration: number, currentTime: number, expanded: boolean) {
-  if (!duration || !Number.isFinite(duration)) return { start: 0, end: 1 }
-  if (expanded) return { start: 0, end: duration }
-  const windowDuration = Math.min(24, duration)
-  const start = Math.max(0, Math.min(duration - windowDuration, currentTime - 8))
-  return { start, end: start + windowDuration }
-}
-
-function buildTimelineMarks(start: number, end: number) {
-  const duration = Math.max(0, end - start)
-  return Array.from({ length: 6 }, (_, index) => start + (duration * index) / 5)
-}
-
-function sliceWaveform(peaks: number[], window: { start: number; end: number }, duration: number) {
-  if (!peaks.length || !duration) return []
-  const startIndex = Math.max(0, Math.floor((window.start / duration) * peaks.length))
-  const endIndex = Math.min(peaks.length, Math.max(startIndex + 1, Math.ceil((window.end / duration) * peaks.length)))
-  return peaks.slice(startIndex, endIndex).map((peak) => Math.max(0, Math.min(1, peak)))
 }
 
 function formatMetric(value: number | null | undefined) {

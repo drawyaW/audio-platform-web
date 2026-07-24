@@ -9,6 +9,7 @@ export type PlaybackContextValue = {
   loadingAssetId: string
   playing: boolean
   playAsset: (asset: Asset) => Promise<void>
+  seek: (seconds: number) => void
   toggle: () => void
 }
 

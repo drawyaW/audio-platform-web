@@ -68,6 +68,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  function seek(seconds: number) {
+    const audio = getAudio()
+    if (!audio.src) return
+    const limit = Number.isFinite(audio.duration) ? audio.duration : duration
+    const next = Math.max(0, Math.min(limit || seconds, seconds))
+    audio.currentTime = next
+    setCurrentTime(next)
+  }
+
   const value = {
     currentAsset,
     currentTime,
@@ -76,6 +85,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     loadingAssetId,
     playing,
     playAsset,
+    seek,
     toggle,
   }
 

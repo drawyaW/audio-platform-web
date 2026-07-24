@@ -57,6 +57,11 @@ export type AssetPlayUrlResponse = {
   expires_in_seconds: number
 }
 
+export type LyricsAssetResponse = {
+  audio_asset: Asset
+  lyrics_asset: Asset | null
+}
+
 export type Task = {
   task_id: string
   project_id: string
@@ -109,8 +114,34 @@ export type ChordSegment = {
   mean_strength: number | null
 }
 
+export type LyricLine = {
+  start_seconds: number
+  end_seconds: number | null
+  text: string
+}
+
+export type LyricsDocument = {
+  lrc: string
+  source: 'asset_lrc' | 'embedded' | 'none' | string
+  source_asset_id: string | null
+  format: 'lrc' | 'text' | null | string
+  synced: boolean
+  plain_text: string
+  lines: LyricLine[]
+}
+
 export type AnalysisDocument = {
   summary: AnalysisSummary
+  metadata?: {
+    file_name?: string | null
+    duration_seconds?: number | null
+    sample_rate?: number | null
+    codec?: string | null
+    channels?: number | null
+    bit_rate?: number | null
+    lossless?: boolean | number | null
+    tags?: Record<string, unknown>
+  }
   waveform?: {
     version?: number
     method?: string | null
@@ -173,6 +204,7 @@ export type AnalysisDocument = {
       segments?: ChordSegment[]
     }
   }
+  lyrics?: LyricsDocument
 }
 
 export type AnalyzerJob = {

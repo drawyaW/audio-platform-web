@@ -1,5 +1,5 @@
 import { apiRequest, serviceUrls } from '../lib/api'
-import type { Asset, AssetPlayUrlResponse, LoginResponse, Project, Task, UploadResponse, User } from '../types/audioAssets'
+import type { Asset, AssetPlayUrlResponse, LoginResponse, LyricsAssetResponse, Project, Task, UploadResponse, User } from '../types/audioAssets'
 
 const baseUrl = serviceUrls.assets
 
@@ -64,6 +64,17 @@ export const audioAssetsApi = {
     if (payload.duration !== undefined) body.append('duration', String(payload.duration))
     body.append('file', payload.file)
     return apiRequest<UploadResponse>(`${baseUrl}/assets/upload`, { method: 'POST', body })
+  },
+
+  getAssetLyrics(assetId: string) {
+    return apiRequest<LyricsAssetResponse>(`${baseUrl}/assets/${encodeURIComponent(assetId)}/lyrics`)
+  },
+
+  uploadAssetLyrics(assetId: string, file: File, replace = true) {
+    const body = new FormData()
+    body.append('replace', String(replace))
+    body.append('file', file)
+    return apiRequest<UploadResponse>(`${baseUrl}/assets/${encodeURIComponent(assetId)}/lyrics`, { method: 'POST', body })
   },
 
   deleteAsset(assetId: string) {
