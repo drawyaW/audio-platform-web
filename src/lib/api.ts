@@ -3,7 +3,7 @@ export const serviceUrls = {
   separator: import.meta.env.VITE_SEPARATOR_API ?? 'http://127.0.0.1:8001/api/audio-processing',
   analyzer: import.meta.env.VITE_ANALYZER_API ?? 'http://127.0.0.1:8020/api/audio-analysis',
   agent: import.meta.env.VITE_AGENT_API ?? 'http://127.0.0.1:8020',
-  generation: import.meta.env.VITE_GENERATION_API ?? 'http://127.0.0.1:8050',
+  generation: import.meta.env.VITE_GENERATION_API ?? 'http://127.0.0.1:8050/api/music-generation',
 } as const
 
 export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
