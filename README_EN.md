@@ -52,6 +52,13 @@ Chinese documentation: [README.md](README.md)
 
 ![Asset library](docs/images/asset-library.png)
 
+When an asset with an analysis result is played from the library or workspace,
+the bottom player can be expanded. It loads the latest analysis asset and linked
+lyrics, then synchronizes a 24-second waveform window, the current chord, LRC
+lyrics, music tags, and core analysis metrics with playback.
+
+![Expanded playback with waveform, chords, lyrics, and analysis metrics](docs/images/playback-analysis.png)
+
 ### Task center
 
 - Upload, separation, analysis, and generation tasks loaded from

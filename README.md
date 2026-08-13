@@ -50,6 +50,12 @@ English documentation: [README_EN.md](README_EN.md)
 
 ![资产库](docs/images/asset-library.png)
 
+从资产库或工作台播放一个已有分析结果的音频后，可以展开底部播放器：界面会自动读取
+该音频最新的分析资产和关联歌词，在播放过程中同步展示 24 秒波形窗口、当前和弦、
+LRC 歌词、音乐标签以及核心分析指标。
+
+![播放器展开详情：波形、和弦、歌词与分析指标](docs/images/playback-analysis.png)
+
 ### 5. 任务中心
 
 - 从 `audio-assets.task` 加载上传、分离、分析和生成任务。
