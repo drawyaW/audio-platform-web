@@ -1,12 +1,12 @@
-# SONORA Web
+# CHEER Web
 
-SONORA 音频智能创作平台的统一 Web 前端。它把用户、项目、音频资产、音轨分离、
+CHEER 音频智能创作平台的统一 Web 前端。它把用户、项目、音频资产、音轨分离、
 音乐分析、AI 音乐生成和 Agent 编排放在同一个工作空间中，并通过 `asset_id` 与
 持久化 `task` 串联各个后端服务。
 
 English documentation: [README_EN.md](README_EN.md)
 
-![SONORA 首页](docs/images/home.png)
+![CHEER 首页](docs/images/home.png)
 
 ## 已实现功能
 

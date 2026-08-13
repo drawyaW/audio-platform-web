@@ -40,7 +40,7 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <section className="login-showcase">
-        <Link to="/" className="login-brand"><span><AudioLines size={21} /></span>SONORA</Link>
+        <Link to="/" className="login-brand"><span><AudioLines size={21} /></span>CHEER</Link>
         <div className="login-visual">
           <span className="login-orb"><AudioLines size={38} /></span>
           <div className="login-wave">{[22, 52, 74, 35, 88, 54, 96, 43, 68, 29, 80, 46, 62].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div>
@@ -52,7 +52,7 @@ export function LoginPage() {
       <section className="login-form-side">
         <Link to="/" className="back-home"><ArrowLeft size={15} /> 返回工作台</Link>
         <form className="login-form" onSubmit={submit}>
-          <span className="eyebrow">WELCOME TO SONORA</span>
+          <span className="eyebrow">WELCOME TO CHEER</span>
           <h2>{register ? '创建你的工作空间' : '欢迎回来'}</h2>
           <p>{register ? '注册后会自动创建一个 Default Project。' : '登录以继续你的音乐创作。'}</p>
           {register && <label><span>用户名</span><div><AudioLines size={16} /><input required value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" placeholder="你的用户名" /></div></label>}

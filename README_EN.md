@@ -1,13 +1,13 @@
-# SONORA Web
+# CHEER Web
 
-SONORA Web is the unified browser workspace for the audio creation platform. It
+CHEER Web is the unified browser workspace for the audio creation platform. It
 connects users, projects, audio assets, source separation, music analysis, AI
 music generation, and Agent orchestration through durable `asset_id` and `task`
 records.
 
 Chinese documentation: [README.md](README.md)
 
-![SONORA home](docs/images/home.png)
+![CHEER home](docs/images/home.png)
 
 ## Implemented features
 

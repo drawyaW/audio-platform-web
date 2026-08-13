@@ -46,7 +46,7 @@ export function AppShell() {
         <div className="brand-row">
           <NavLink to="/" className="brand" onClick={() => setMobileOpen(false)}>
             <span className="brand-mark"><AudioLines size={20} /></span>
-            <span>SONORA</span>
+            <span>CHEER</span>
           </NavLink>
           <button className="icon-button sidebar-close" onClick={() => setMobileOpen(false)} aria-label="关闭菜单">
             <PanelLeftClose size={19} />
